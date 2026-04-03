@@ -172,15 +172,18 @@ const game = {
   player: null, bullets: [], enemies: [], particles: [],
   currentWave: 0, spawnQueue: [], spawnTimer: 0,
   levelCompleteTimer: 0, highScore: 0,
+  paused: false,
 };
 
 // ===== SECTION 5: INPUT HANDLER =====
 const input = {
   keys: {}, mouse: { x: 400, y: 300, down: false, clicked: false },
+  pausePressed: false,
   init(canvas) {
     window.addEventListener('keydown', e => {
       this.keys[e.code] = true;
       if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+      if (e.code === 'Escape' || e.code === 'KeyP') this.pausePressed = true;
     });
     window.addEventListener('keyup', e => { this.keys[e.code] = false; });
     canvas.addEventListener('mousemove', e => {
@@ -196,6 +199,7 @@ const input = {
     canvas.addEventListener('contextmenu', e => e.preventDefault());
   },
   consumeClick() { const c = this.mouse.clicked; this.mouse.clicked = false; return c; },
+  consumePause() { const p = this.pausePressed; this.pausePressed = false; return p; },
 };
 
 // ===== SECTION 6: PLAYER =====
@@ -262,14 +266,24 @@ class Player {
   }
 }
 
+// ===== SECTION 6B: GUN UPGRADE SYSTEM =====
+function getGunStats() {
+  const level = Math.floor(game.score / 100);
+  const fireRate = Math.max(2, CONFIG.FIRE_RATE - level * 0.4);
+  const damage = 1 + Math.floor(level / 4);
+  const bulletCount = level >= 10 ? 3 : level >= 5 ? 2 : 1;
+  return { level, fireRate, damage, bulletCount };
+}
+
 // ===== SECTION 7: BULLET =====
 class Bullet {
-  constructor(x, y, angle) {
+  constructor(x, y, angle, damage = 1) {
     this.x = x; this.y = y;
     this.vx = Math.cos(angle) * CONFIG.BULLET_SPEED;
     this.vy = Math.sin(angle) * CONFIG.BULLET_SPEED;
     this.life = CONFIG.BULLET_LIFETIME;
     this.radius = 3; this.alive = true;
+    this.damage = damage;
   }
   update() {
     this.x += this.vx; this.y += this.vy;
@@ -508,7 +522,7 @@ function checkCollisions() {
       if (!e.alive) continue;
       if (circlesCollide(b, e)) {
         b.alive = false;
-        e.takeDamage(1);
+        e.takeDamage(b.damage);
         spawnBlood(e.x, e.y);
         SFX.hit();
         if (!e.alive) {
@@ -576,6 +590,13 @@ function drawHUD(ctx) {
     const sx = barX + (barW / CONFIG.PLAYER_MAX_HP) * i;
     ctx.beginPath(); ctx.moveTo(sx, barY); ctx.lineTo(sx, barY + barH); ctx.stroke();
   }
+
+  // Gun Level
+  const gunStats = getGunStats();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 12px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`GUN LVL: ${gunStats.level}`, barX, barY + 30);
 
   // Score
   ctx.textAlign = 'center';
@@ -696,6 +717,19 @@ function drawLevelComplete(ctx) {
   ctx.textAlign = 'left';
 }
 
+function drawPaused(ctx) {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 40px monospace';
+  ctx.fillText('PAUSED', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 - 10);
+  ctx.fillStyle = PAL.MENU_SUB;
+  ctx.font = '14px monospace';
+  ctx.fillText('Press ESC or P to resume', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 25);
+  ctx.textAlign = 'left';
+}
+
 function drawGameOver(ctx) {
   ctx.fillStyle = 'rgba(80,0,0,0.7)';
   ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
@@ -728,7 +762,7 @@ function startGame() {
   game.score = 0; game.level = 1;
   game.bullets = []; game.enemies = []; game.particles = [];
   game.player = new Player();
-  game.damageFlash = 0;
+  game.damageFlash = 0; game.paused = false;
   startLevel();
   game.state = STATE.PLAYING;
 }
@@ -748,12 +782,19 @@ function update() {
       break;
 
     case STATE.PLAYING:
+      if (input.consumePause()) { game.paused = !game.paused; }
+      if (game.paused) break;
       game.player.update();
       // Shooting
       if (input.mouse.down && game.player.fireCooldown <= 0) {
+        const gunStats = getGunStats();
         const tip = game.player.getGunTip();
-        game.bullets.push(new Bullet(tip.x, tip.y, game.player.angle));
-        game.player.fireCooldown = CONFIG.FIRE_RATE;
+        const spread = gunStats.bulletCount > 1 ? 0.15 : 0;
+        for (let i = 0; i < gunStats.bulletCount; i++) {
+          const offset = gunStats.bulletCount === 1 ? 0 : (i - (gunStats.bulletCount - 1) / 2) * spread;
+          game.bullets.push(new Bullet(tip.x, tip.y, game.player.angle + offset, gunStats.damage));
+        }
+        game.player.fireCooldown = gunStats.fireRate;
         spawnMuzzleFlash(tip.x, tip.y, game.player.angle);
         SFX.shoot();
       }
@@ -815,6 +856,7 @@ function render() {
       }
       drawHUD(ctx);
       drawCrosshair(ctx);
+      if (game.paused) drawPaused(ctx);
       break;
 
     case STATE.LEVEL_COMPLETE:
